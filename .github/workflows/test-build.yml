@@ -1,0 +1,55 @@
+name: Test build (unsigned)
+
+# Builds the three apps ad-hoc signed, without an Apple Developer account,
+# so a branch can be tried on a real machine without a local Xcode install.
+on:
+  push:
+    branches: ['ci/**']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          newest=$(ls -d /Applications/Xcode_*.app | grep -v -i beta | sort -V | tail -1)
+          sudo xcode-select -s "$newest"
+          xcodebuild -version
+          sw_vers
+
+      - name: Preference regression tests
+        run: Tests/SharedPreferences/run.sh
+
+      - name: Build and ad-hoc sign
+        run: ./build-unsigned.sh
+
+      - name: Show build errors
+        if: failure()
+        run: |
+          xcodebuild -workspace OpenInTerminal.xcworkspace -scheme OpenInTerminal \
+            -configuration Release -derivedDataPath build \
+            -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO build 2>&1 | tail -150
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          for app in export/*.app; do
+            name=$(basename "$app" .app)
+            codesign -dvv --entitlements - "$app" 2>&1 | head -40
+            ditto -c -k --keepParent "$app" "dist/$name.zip"
+          done
+          (cd dist && shasum -a 256 *.zip | tee SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-apps-${{ matrix.os }}
+          path: dist/
